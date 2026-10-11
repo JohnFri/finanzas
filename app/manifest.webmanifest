@@ -20,5 +20,29 @@
    "type": "image/png",
    "purpose": "any maskable"
   }
+ ],
+ "shortcuts": [
+  {
+   "name": "Anotar gasto",
+   "short_name": "Gasto",
+   "url": "./?nuevo=gasto",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  },
+  {
+   "name": "Anotar quién me debe",
+   "short_name": "Me deben",
+   "url": "./?nuevo=cobro",
+   "icons": [
+    {
+     "src": "icon-192.png",
+     "sizes": "192x192"
+    }
+   ]
+  }
  ]
 }

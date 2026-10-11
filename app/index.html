@@ -698,6 +698,24 @@ a.btn{text-decoration:none}
 @keyframes confall{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(108vh) rotate(620deg)}}
 @media print{.confetti{display:none}}
 
+/* Para el día a día */
+.lbstrip{display:flex;align-items:center;gap:16px;padding:14px 18px}
+.lbstrip .lb-main{flex:1;min-width:0}
+.lbstrip .lbl{font-size:12.5px;color:var(--muted);font-weight:600}
+.lbstrip .val{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}
+@media (max-width:860px){ .lbstrip{flex-wrap:wrap;padding:12px 14px} .lbstrip .btn{flex:1 1 100%;justify-content:center} }
+/* Candado */
+body.locked > :not(#lock){visibility:hidden}
+#lock{position:fixed;inset:0;z-index:1000;background:var(--bg);display:grid;place-items:center;padding:16px}
+.lock-box{width:100%;max-width:300px;display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}
+.lock-box h2{margin:0;font-size:20px}
+.lock-ic{font-size:40px;line-height:1}
+.lock-box .inp{width:100%;text-align:center;font-size:24px;letter-spacing:.4em;height:52px}
+.lock-box .btn{width:100%;justify-content:center;height:46px}
+#lockMsg{margin:0;min-height:1.2em;color:var(--bad)}
+.shake{animation:shake .35s}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+
 @media (min-width:861px){.fab,.fab-menu{display:none!important}}
 </style>
 </head>
@@ -1230,11 +1248,12 @@ function icsPagos(S, hoy) {
     let yy = y, mm = mes || m;
     if (mes) { if (mes < m || (mes === m && Math.min(dia, lastOf(yy, mm)) < d)) yy++; }
     else if (Math.min(dia, lastOf(yy, mm)) < d) { mm++; if (mm > 12) { mm = 1; yy++; } }
-    ev.push(["BEGIN:VEVENT", `UID:${uidk}@mis-pagos`, `DTSTAMP:${ymd(y, m, d)}T000000Z`,
-      `DTSTART;VALUE=DATE:${ymd(yy, mm, Math.min(dia, lastOf(yy, mm)))}`, `RRULE:FREQ=${mes ? `YEARLY;BYMONTH=${mes}` : "MONTHLY"};${byDay(dia)}`,
-      `SUMMARY:${tx(title)}`, `DESCRIPTION:${tx(`${has(amt) && num(amt) > 0 ? `Aprox. ${fm(amt)}. ` : ""}Al pagarlo, palomealo en la app.`)}`, "TRANSP:TRANSPARENT",
-      "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${tx(title)}`, "TRIGGER:-PT15H", "END:VALARM", "END:VEVENT"].join("\r\n"));
+    vev(uidk, ymd(yy, mm, Math.min(dia, lastOf(yy, mm))), `RRULE:FREQ=${mes ? `YEARLY;BYMONTH=${mes}` : "MONTHLY"};${byDay(dia)}`,
+      title, `${has(amt) && num(amt) > 0 ? `Aprox. ${fm(amt)}. ` : ""}Al pagarlo, palomealo en la app.`);
   };
+  const vev = (uidk, start, rrule, title, desc) => ev.push(["BEGIN:VEVENT", `UID:${uidk}@mis-pagos`, `DTSTAMP:${ymd(y, m, d)}T000000Z`,
+    `DTSTART;VALUE=DATE:${start}`, ...(rrule ? [rrule] : []), `SUMMARY:${tx(title)}`, `DESCRIPTION:${tx(desc)}`, "TRANSP:TRANSPARENT",
+    "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${tx(title)}`, "TRIGGER:-PT15H", "END:VALARM", "END:VEVENT"].join("\r\n"));
   for (const c of S.cards) if (has(c.diaPago) && !(has(c.saldo) && num(c.saldo) <= 0)) add(`card-${c.id}`, `💳 Pagar ${c.nombre}`, c.diaPago, has(c.pagoReal) ? c.pagoReal : has(c.saldo) ? C.minPay(c) : "");
   for (const e of S.expenses) {
     if (!has(e.monto) || !has(e.dia)) continue;
@@ -1245,8 +1264,27 @@ function icsPagos(S, hoy) {
     } else if (f > 0 && f < 1 && MESES.includes(e.mes)) add(`exp-${e.id}`, `📅 ${e.concepto}`, e.dia, e.monto, MESES.indexOf(e.mes) + 1);
   }
   for (const x of S.debts) if (x.nomina !== "Sí" && has(x.pago) && has(x.dia)) add(`debt-${x.id}`, `🧾 Pagar ${x.acreedor}`, x.dia, x.pago);
+  for (const c of S.cobros || []) {
+    const saldo = num(c.monto) - sum(c.abonos || [], a => num(a.monto));
+    if (c.liquidado || saldo <= 0 || !c.compromiso || c.compromiso < hoy) continue;
+    vev(`cobro-${c.id}`, c.compromiso.replace(/-/g, ""), "", `💰 Cobrar a ${c.persona || "alguien"}${c.concepto ? `: ${c.concepto}` : ""}`, `Le falta pagarte ${fm(saldo)}. Quedó de pagarte este día.`);
+  }
   const text = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Mis pagos//ES", "CALSCALE:GREGORIAN", "X-WR-CALNAME:Pagos", ...ev, "END:VCALENDAR", ""].join("\r\n");
   return { text, count:ev.length };
+}
+
+/* ---------- Para el día a día: gastos variables del presupuesto contra lo anotado en Movimientos este mes ---------- */
+function libre(S, hoy) {
+  const mk = hoy.slice(0, 7), [y, m, d] = hoy.split("-").map(Number), dias = new Date(y, m, 0).getDate() - d + 1;
+  const plan = sum(S.expenses.filter(e => e.tipo !== "Fijo"), C.expMonthly);
+  const gastado = sum((S.txns || []).filter(t => String(t.fecha || "").slice(0, 7) === mk), t => num(t.monto)), queda = plan - gastado;
+  return { plan, gastado, queda, dias, semana:queda > 0 ? queda / Math.max(1, dias / 7) : 0 };
+}
+
+/* ---------- Patrimonio mes a mes: una foto por mes; la última del mes es la que se queda ---------- */
+function autoHist(S, T = totals(S)) {
+  S.historial = S.historial && typeof S.historial === "object" && !Array.isArray(S.historial) ? S.historial : {};
+  S.historial[localISO().slice(0, 7)] = { activos:Math.round(T.activos), deudas:Math.round(T.tdc + T.otras) };
 }
 
 /* ---------- Me deben: cada cuenta cuelga de una ficha (persona o empresa) ---------- */
@@ -1342,7 +1380,7 @@ function gist(token, fetchFn = (...a) => globalThis.fetch(...a)) {
 
 const api = { VERSION, FREQ, MESES, PERSONAS, SINO, CATS, setIva, getIva, num, has, pad, localISO, monthKey, addMonths, monthName,
   daysBetween, fm, fp, fmtDate, uid, fq, sum, C, totals, pool, METHODS, simulatePool, simulate, minBudget, budgetForMonths, loan, consolidate, transfer, flujo, quincenas, monthItems, nextDue, alerts,
-  achievements, autoSnapshot, seed, migrate, validateBackup, icsPagos, normName, linkDeudores, netoDeBruto, DIAS_SEM, weekdayCount, SYNC_FILE, APP_FILE, seal, unseal, syncDecide, gist };
+  achievements, autoSnapshot, seed, migrate, validateBackup, icsPagos, libre, autoHist, normName, linkDeudores, netoDeBruto, DIAS_SEM, weekdayCount, SYNC_FILE, APP_FILE, seal, unseal, syncDecide, gist };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 root.Core = api;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -1405,6 +1443,7 @@ const IC = {
   upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   cloud:'<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+  lock:'<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   link:'<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
@@ -1590,7 +1629,7 @@ function load() {
 }
 function persist({ silent = false, fresh = false } = {}) {
   S.updated = new Date().toISOString();
-  K.autoSnapshot(S);
+  K.autoSnapshot(S); K.autoHist(S);
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { toast("No se pudo guardar en el navegador"); }
   backupRotate();
   if (!fresh) syMark(); // datos iniciales recién creados: no compiten con los de la nube
@@ -1969,6 +2008,7 @@ function vResumen() {
   const logrosP = panel("Logros", `<div class="ach">${K.achievements(S, T).map(a => `<div class="a ${a.ok ? "ok" : "lock"}" title="${esc(a.desc)}"><span class="e">${a.icon}</span>${esc(a.name)}</div>`).join("")}</div>`, { sub:`${K.achievements(S, T).filter(a => a.ok).length} de ${K.achievements(S, T).length}` });
   return backupNag() + ph("Resumen", "", `<button class="btn" data-go="reporte">${icon("report")} Reporte del mes</button>`, new Date().toLocaleDateString("es-MX", { weekday:"long", day:"numeric", month:"long", year:"numeric" })) +
   `<div class="hero"><div style="position:relative;z-index:1">${heroL}</div>${heroR}</div>
+  ${libreStrip()}
   <div class="grid g4 mt">
     ${kpi({ label:"Ingreso mensual", value:M(T.ing), ic:"income", tone:"good", foot:"Neto · variables al mes más bajo" })}
     ${kpi({ label:"Egresos del mes", value:M(T.egresos), ic:"receipt", tone:"warn", foot:"Gastos + mínimos + deudas" })}
@@ -2263,6 +2303,7 @@ function vCalendario() {
     if (i.frecuencia === "Quincenal") push(+i.dia <= 15 ? +i.dia + 15 : +i.dia - 15, "in", `+${fm(i.monto)} ${i.fuente}`);
   }
   for (const c of S.cards) if (has(c.diaCorte)) push(c.diaCorte, "cut", `✂ Corte ${c.nombre}`);
+  for (const c of S.cobros) if (!c.liquidado && c.compromiso && c.compromiso.slice(0, 7) === mk && cSaldo(c) > 0) push(+c.compromiso.slice(8), "in", `💰 Cobrar ${fm(cSaldo(c))} ${cName(c)}`);
   const isCur = mk === monthKey(), items = K.monthItems(S, mk, isCur ? planInfo().pays : {});
   for (const it of items) if (it.day) push(it.day, `${it.kind === "card" ? "evcard" : "out"} ${it.paid ? "done" : ""}`, `${it.kind === "card" ? "💳 " : ""}${has(it.amt) ? fm(it.amt) + " " : ""}${it.name}`);
   const t = new Date(); let cells = "";
@@ -2440,7 +2481,19 @@ function vAhorros() {
     { h:"Disponibilidad", v:s => pill(esc(s.disponibilidad || "?"), s.disponibilidad === "Inmediata" ? "good" : s.disponibilidad === "A plazo" ? "warn" : "") },
     { h:"Rendimiento", cls:"r", v:s => fp(s.rendimiento, 1) },
     { h:"Aporte mensual", cls:"r", v:s => fm(s.aportacion) },
-    { h:"Saldo / valor", cls:"r", v:s => `<b>${fm(s.saldo)}</b>` }], S.savings), { cls:"flush" })}</div>`;
+    { h:"Saldo / valor", cls:"r", v:s => `<b>${fm(s.saldo)}</b>` }], S.savings), { cls:"flush" })}</div>
+  <div class="mt">${patrimonioPanel()}</div>`;
+}
+
+function patrimonioPanel() {
+  const H = Object.entries(S.historial || {}).sort(([a], [b]) => a.localeCompare(b)).slice(-24);
+  const mes = k => `${MESES[+k.slice(5) - 1].slice(0, 3)} ${k.slice(2, 4)}`;
+  if (H.length < 2) return panel("Patrimonio mes a mes", `<p class="muted" style="margin:0">Cada mes se guarda sola una foto de lo que tienen y lo que deben. La gráfica aparece desde el mes que entra.</p>`, { sub:"empieza este mes" });
+  const rows = H.slice(-6).reverse().map(([k, h], i, arr) => { const neto = h.activos - h.deudas, prev = arr[i + 1] ? arr[i + 1][1].activos - arr[i + 1][1].deudas : null;
+    return `<tr><td>${mes(k)}</td><td class="r">${fm(h.activos)}</td><td class="r">${fm(h.deudas)}</td><td class="r"><b class="${neto < 0 ? "bad" : ""}">${fm(neto)}</b></td><td class="r">${prev === null ? "" : `<span class="${neto >= prev ? "good" : "bad"}">${neto >= prev ? "▲" : "▼"} ${fm(Math.abs(neto - prev))}</span>`}</td></tr>`; }).join("");
+  return panel("Patrimonio mes a mes", lineChart([{ c:"var(--good)", data:H.map(([, h]) => h.activos) }, { c:"var(--bad)", data:H.map(([, h]) => h.deudas) }], { width:900, height:200, xlabel:i => H[i] ? mes(H[i][0]) : "" }) +
+    `<div class="row tiny muted" style="margin:6px 0 12px"><span class="row" style="gap:5px"><i class="swatch" style="background:var(--good)"></i>Lo que tienen</span><span class="row" style="gap:5px"><i class="swatch" style="background:var(--bad)"></i>Lo que deben</span></div>
+    <div class="tbl"><table><thead><tr><th>Mes</th><th class="r">Tienen</th><th class="r">Deben</th><th class="r">Neto</th><th class="r">Cambio</th></tr></thead><tbody>${rows}</tbody></table></div>`, { sub:"cuando la línea verde pase a la roja, ya tienen más de lo que deben" });
 }
 
 /* ---------- Me deben: fichas de personas o empresas, cada una con sus cuentas ---------- */
@@ -2483,7 +2536,7 @@ function vCobros() {
       <div class="between"><span class="dc-ic">${TIPO_ICON[d.tipo] || "🙋"}</span>${s.venc.length ? pill(`${s.venc.length} vencida${s.venc.length > 1 ? "s" : ""}`, "bad") : s.total ? "" : pill("Al corriente ✓", "good")}</div>
       <div class="b dc-n">${esc(d.nombre)}</div><div class="tiny muted">${esc(d.tipo || "Persona")} · ${s.pend.length} cuenta${s.pend.length === 1 ? "" : "s"} pendiente${s.pend.length === 1 ? "" : "s"}</div>
       <div class="dc-amt">${M(s.total)}</div><div class="tiny muted">${s.last ? `Último movimiento: ${fmtDate(s.last)}` : "Sin movimientos"}</div></button>`;
-  return ph("Me deben", "Una ficha por persona o empresa, con todas sus cuentas, abonos y fechas.", `<button class="btn" data-add="cobros">${icon("plus")} Anotar deuda</button><button class="btn primary" data-add="deudores">${icon("users")} Persona o empresa</button>`, "Lo que tienen") +
+  return ph("Me deben", "Una ficha por persona o empresa, con todas sus cuentas, abonos y fechas.", `<button class="btn" data-act="dividir">➗ Dividir un gasto</button><button class="btn" data-add="cobros">${icon("plus")} Anotar deuda</button><button class="btn primary" data-add="deudores">${icon("users")} Persona o empresa</button>`, "Lo que tienen") +
   `<div class="grid g4">${kpi({ label:"Te deben en total", value:M(K.sum(pend, cSaldo)), ic:"users", tone:"good", foot:`${conDeuda} con saldo pendiente` })}
     ${kpi({ label:"Vencidos", value:M(K.sum(venc, cSaldo), venc.length ? "bad" : ""), ic:"alert", tone:venc.length ? "bad" : "primary", foot:venc.length ? `${venc.length} ya pasaron su fecha` : "Ninguno" })}
     ${kpi({ label:"Te pagaron este mes", value:M(cobradoMes), ic:"cash", tone:"teal", foot:"Abonos y pagos completos" })}
@@ -2526,6 +2579,17 @@ function vDeudor(d) {
   ${paid.length ? `<div class="mt">${panel("Ya pagadas ✓", paid.map(c => `<div class="cobro done"><div class="cb-main"><s>${esc(c.concepto || "Cuenta")} · ${fm(c.monto)}</s><div class="tiny muted">Liquidó el ${fmtDate(c.liquidado)}</div></div>
       <div class="row"><button class="btn sm ghost" data-reabrir="${c.id}">Deshacer</button><button class="iconbtn del" data-del="cobros:${c.id}" aria-label="Borrar">${icon("trash")}</button></div></div>`).join(""), { cls:"flush" })}</div>` : ""}
   <div class="mt"><button class="btn danger sm" data-deldeudor="${d.id}">${icon("trash")} Borrar ficha</button></div>`;
+}
+/* Cuánto queda para el día a día este mes (y por semana) */
+function libreStrip() {
+  const L = K.libre(S, localISO()); if (L.plan <= 0) return "";
+  const p = L.gastado / L.plan, tone = L.queda < 0 ? "bad" : p > .85 ? "warn" : "good";
+  return `<section class="panel lbstrip mt"><div class="lb-main"><div class="lbl">Para el día a día ${L.queda < 0 ? "te pasaste por" : "te quedan"}</div>
+    <div class="val">${M(Math.abs(L.queda), tone === "bad" ? "bad" : "")} <span class="tiny muted">este mes</span></div>
+    <div class="tiny muted">${L.queda > 0 ? `≈ <b class="amt">${fm(L.semana)}</b> por semana · ` : ""}quedan ${L.dias} día${L.dias > 1 ? "s" : ""} · llevas <span class="amt">${fm(L.gastado)}</span> de <span class="amt">${fm(L.plan)}</span></div>
+    <div style="margin-top:8px">${bar(Math.min(1, p), tone)}</div>
+    <div class="tiny muted" style="margin-top:6px">Lo planeado en gastos variables (mandado, gasolina…) menos lo que anotas en Movimientos.</div></div>
+    <button class="btn" data-fab="txn:">${icon("plus")} Anotar gasto</button></section>`;
 }
 /* Total de «Me deben» en el Resumen */
 function teDebenStrip() {
@@ -2581,6 +2645,77 @@ function reabrir(id) {
   c.liquidado = ""; persist(); render({ keepScroll:true }); toast("Cuenta pendiente otra vez");
 }
 
+/* ---------- Me deben: dividir un gasto entre varios ---------- */
+function dividirForm() {
+  const fields = [{ k:"concepto", l:"¿Qué se pagó?", t:"text", req:true, ph:"Ej. Comida del domingo", full:true }, { k:"total", l:"Total que pagaste", t:"money", req:true },
+    { k:"fecha", l:"Fecha", t:"date", req:true }, { k:"personas", l:"¿Entre quiénes? (separados por coma)", t:"text", req:true, ph:"Ej. Toño, Lupe, Mari", full:true },
+    { k:"yo", l:"¿Tú también pones tu parte?", t:"select", o:["Sí", "No"], req:true }];
+  openModal(`<form id="frm" novalidate><header><div><h2>➗ Dividir un gasto</h2><p>Cada quien queda anotado en «Me deben» con su parte.</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
+    <div class="mb"><div class="form">${fieldHTML(fields[0], "")}${fieldHTML(fields[1], "")}${fieldHTML(fields[2], localISO())}${fieldHTML(fields[3], "")}${fieldHTML(fields[4], "Sí")}</div>
+    <div class="callout good small mt" id="divPrev">Escribe el total y los nombres.</div></div>
+    <footer><span></span><div class="row"><button type="button" class="btn" data-act="close">Cancelar</button><button class="btn primary" type="submit">${icon("check")} Anotar</button></div></footer></form>`, { size:"sm" });
+  const nombres = () => $("#f_personas").value.split(",").map(x => x.trim()).filter((x, i, a) => x && a.findIndex(y => K.normName(y) === K.normName(x)) === i);
+  const calc = () => { const n = nombres(), tot = num($("#f_total").value), k = n.length + ($("#f_yo").value === "Sí" ? 1 : 0);
+    return { n, tot, k, parte:k ? Math.round(tot / k * 100) / 100 : 0 }; };
+  const prev = () => { const c = calc(); $("#divPrev").innerHTML = c.n.length && c.tot > 0 ? `Son ${c.k} partes de <b>${fm(c.parte)}</b>: ${c.n.map(esc).join(", ")} te deben <b>${fm(c.parte * c.n.length)}</b> en total.` : "Escribe el total y los nombres."; };
+  $("#frm").oninput = prev; $("#frm").onchange = prev;
+  $("#frm").onsubmit = ev => {
+    ev.preventDefault();
+    const out = readForm(ev.target, fields); if (!out) return;
+    const c = calc();
+    if (!c.n.length || c.tot <= 0) { toast("Escribe el total y al menos un nombre"); return; }
+    const antes = new Set(S.deudores.map(d => d.id)), nuevas = [];
+    for (const name of c.n) {
+      const dd = deudorFor(name), cb = { id:uid(), persona:dd.nombre, deudorId:dd.id, concepto:`${out.concepto} (su parte)`, monto:c.parte, fecha:out.fecha, compromiso:"", notas:`Total ${fm(c.tot)} entre ${c.k}`, abonos:[], liquidado:"" };
+      S.cobros.push(cb); nuevas.push(cb.id);
+    }
+    sub.deudor = ""; persist(); closeModal(); if (view !== "cobros") go("cobros"); else render();
+    toast(`Anotado: ${c.n.length} te deben ${fm(c.parte)} cada quien`, { label:"Deshacer", fn:() => { S.cobros = S.cobros.filter(x => !nuevas.includes(x.id)); S.deudores = S.deudores.filter(d => antes.has(d.id)); persist(); render(); } });
+  };
+}
+
+/* ---------- Candado con PIN, por aparato. Es una cortina para miradas ajenas: los datos NO se cifran. ---------- */
+const PIN_KEY = LS_KEY + "-pin";
+let hiddenAt = 0, onUnlock = null;
+const pinGet = () => { try { return JSON.parse(localStorage.getItem(PIN_KEY) || "null"); } catch (e) { return null; } };
+async function pinHash(pin, salt) { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(salt + ":" + pin)); return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join(""); }
+async function pinOk(pin) { const p = pinGet(); return !!p && await pinHash(pin, p.salt) === p.hash; }
+function showLock() {
+  if (!pinGet() || $("#lock")) return;
+  closeModal(); closeDrawer(); closePalette();
+  document.body.classList.add("locked");
+  const el = document.createElement("div"); el.id = "lock";
+  el.innerHTML = `<form class="lock-box" id="lockForm" autocomplete="off"><div class="lock-ic">🔒</div><h2>${esc(S.settings.hogarNombre || "Finanzas")}</h2><p class="muted small" style="margin:0">Escribe tu PIN</p>
+    <input id="lockPin" class="inp" type="password" inputmode="numeric" maxlength="6" autocomplete="off" aria-label="PIN">
+    <button class="btn primary" type="submit">Entrar</button><p class="small" id="lockMsg" role="alert"></p>
+    <button type="button" class="linkbtn tiny" id="lockForgot">¿Olvidaste tu PIN?</button></form>`;
+  document.body.appendChild(el);
+  setTimeout(() => $("#lockPin")?.focus(), 50);
+  $("#lockForm").onsubmit = async ev => {
+    ev.preventDefault();
+    if (await pinOk($("#lockPin").value)) { el.remove(); document.body.classList.remove("locked"); const f = onUnlock; onUnlock = null; f?.(); return; }
+    const box = el.querySelector(".lock-box"); $("#lockMsg").textContent = "PIN incorrecto"; $("#lockPin").value = "";
+    box.classList.remove("shake"); void box.offsetWidth; box.classList.add("shake");
+  };
+  $("#lockForgot").onclick = () => { $("#lockMsg").innerHTML = "La única salida es borrar los datos de esta app en el navegador y <b>cargar tu último respaldo</b>. Por eso conviene guardar respaldos seguido."; };
+}
+function pinForm(off) {
+  openModal(`<form id="frm" novalidate><header><div><h2>${off ? "Quitar PIN" : "Poner PIN"}</h2><p>${off ? "Escribe el PIN actual." : "De 4 a 6 números. Solo aplica a este aparato."}</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
+    <div class="mb"><div class="form"><div class="fld"><label for="pin1">${off ? "PIN actual" : "PIN nuevo"}</label><input id="pin1" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div>${off ? "" : `<div class="fld"><label for="pin2">Repítelo</label><input id="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></div>`}</div>
+    ${off ? "" : `<div class="callout warn small mt">Si lo olvidas, la única salida es borrar los datos de la app y cargar un respaldo. Guarda uno antes.</div>`}</div>
+    <footer><span></span><div class="row"><button type="button" class="btn" data-act="close">Cancelar</button><button class="btn primary" type="submit">${off ? "Quitar" : "Guardar PIN"}</button></div></footer></form>`, { size:"sm" });
+  $("#frm").onsubmit = async ev => {
+    ev.preventDefault();
+    const a = $("#pin1").value;
+    if (off) { if (!(await pinOk(a))) return toast("PIN incorrecto"); localStorage.removeItem(PIN_KEY); closeModal(); render({ keepScroll:true }); return toast("PIN quitado"); }
+    if (!/^\d{4,6}$/.test(a)) return toast("El PIN lleva de 4 a 6 números");
+    if (a !== $("#pin2").value) return toast("Los dos PIN no coinciden");
+    const salt = uid();
+    try { localStorage.setItem(PIN_KEY, JSON.stringify({ salt, hash:await pinHash(a, salt) })); } catch (e) { return toast("No se pudo guardar el PIN"); }
+    closeModal(); render({ keepScroll:true }); toast("🔒 PIN listo: se pedirá al abrir la app");
+  };
+}
+
 /* ---------- Metas: sumar lo que se apartó ---------- */
 function goalAbono(id) {
   const g = S.goals.find(x => x.id === id); if (!g) return;
@@ -2620,7 +2755,7 @@ async function saveIcs() {
   download(name, text, "text/calendar"); icsHelp(count);
 }
 function icsHelp(count) {
-  openModal(`<header><div><h2>📲 ${count} recordatorios listos</h2><p>Se repiten solos cada mes y avisan un día antes, a las 9 am.</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
+  openModal(`<header><div><h2>📲 ${count} recordatorios listos</h2><p>Los pagos se repiten solos cada mes; los cobros caen el día que te quedaron de pagar. Todos avisan un día antes, a las 9 am.</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
     <div class="mb"><ol class="small" style="padding-left:18px;margin:0;display:flex;flex-direction:column;gap:8px">
       <li><b>Con Google Calendar</b> (el más fácil): en la computadora entra a <b>calendar.google.com</b> → ⚙ Configuración → <b>Importar y exportar</b> → elige el archivo <code>recordatorios_de_pagos.ics</code>. Aparecen solos en tu celular.</li>
       <li><b>Desde el celular</b>: abre el archivo descargado; si tu calendario lo acepta (Samsung, por ejemplo), toca «Agregar».</li>
@@ -2722,6 +2857,7 @@ function vDatos() {
       <div class="fld"><label>IVA sobre intereses</label><div class="affix"><input type="number" step="1" value="${(num(S.settings.iva) * 100).toFixed(0)}" data-setting="iva"><span class="suf">%</span></div><small>Ley del IVA: 16% sobre intereses de tarjeta.</small></div>
       <div class="fld"><label>Meta de colchón</label><div class="affix"><input type="number" min="1" max="12" step="1" value="${S.settings.colchonMeta || 3}" data-setting="colchonMeta"><span class="suf">meses</span></div><small>Condusef: de 3 a 6 meses.</small></div>
       ${letraFld()}
+      <div class="fld"><label>Candado de este aparato</label>${pinGet() ? `<div class="row"><button class="btn" data-act="lock">${icon("lock")} Bloquear ahora</button><button class="btn" data-act="pinoff">Quitar PIN</button></div>` : `<button class="btn" data-act="pinset">${icon("lock")} Poner PIN</button>`}<small>Pide un PIN al abrir y al volver después de 1 minuto. Tapa miradas ajenas; no cifra los datos.</small></div>
       <div class="fld"><label>Tema</label><select data-setting="theme"><option value="">Automático</option><option value="light" ${S.settings.theme === "light" ? "selected" : ""}>Claro</option><option value="dark" ${S.settings.theme === "dark" ? "selected" : ""}>Oscuro</option></select></div>
       <div class="fld"><label>Asistente de bienvenida</label><button class="btn" data-act="wizard">${icon("sparkle")} Abrir otra vez</button></div></div>
       <div class="section">Zona de cuidado</div><button class="btn danger" data-act="reset">${icon("trash")} Borrar todo y empezar de cero</button>`)}
@@ -3064,13 +3200,17 @@ document.addEventListener("click", e => {
     else if (a === "reconnect") reconnect();
     else if (a === "export") saveBackup();
     else if (a === "ics") saveIcs();
+    else if (a === "dividir") { $("#fabMenu").classList.remove("on"); dividirForm(); }
+    else if (a === "pinset") pinForm(false);
+    else if (a === "pinoff") pinForm(true);
+    else if (a === "lock") showLock();
     else if (a === "sync" || a === "syncnow") sync({ manual:true });
     else if (a === "syncoff") { if (confirm("¿Desconectar este aparato? Sus datos se quedan aquí y en la nube; solo deja de sincronizar.")) { SY = {}; sySave(); render({ keepScroll:true }); toast("Este aparato ya no sincroniza"); } }
     else if (a === "import") $("#fileIn").click();
     else if (a === "palette") openPalette();
     else if (a === "priv") togglePriv();
     else if (a === "theme") toggleTheme();
-    else if (a === "fab") { const m = $("#fabMenu"); m.innerHTML = `<button data-fab="txn:">${icon("plus")} Registrar gasto</button><button data-fab="cobro:">${icon("users")} Anotar quién me debe</button>${S.cards.filter(c => !has(c.saldo) || num(c.saldo) > 0).map(c => `<button data-fab="pay:${c.id}">${icon("cash")} Pago a ${esc(c.nombre)}</button>`).join("")}<button data-fab="pal:estado">${icon("receipt")} Estado de cuenta nuevo…</button>`; m.classList.toggle("on"); }
+    else if (a === "fab") { const m = $("#fabMenu"); m.innerHTML = `<button data-fab="txn:">${icon("plus")} Registrar gasto</button><button data-fab="cobro:">${icon("users")} Anotar quién me debe</button><button data-act="dividir">➗ Dividir un gasto</button>${S.cards.filter(c => !has(c.saldo) || num(c.saldo) > 0).map(c => `<button data-fab="pay:${c.id}">${icon("cash")} Pago a ${esc(c.nombre)}</button>`).join("")}<button data-fab="pal:estado">${icon("receipt")} Estado de cuenta nuevo…</button>`; m.classList.toggle("on"); }
     else if (a === "wizard") wizard(0);
     else if (a === "wizclose") { S.settings.onboarded = true; persist(); closeModal(); render(); }
     else if (a === "wizdone") { S.settings.onboarded = true; persist(); closeModal(); go("resumen"); }
@@ -3087,6 +3227,7 @@ document.addEventListener("click", e => {
   }
 });
 document.addEventListener("keydown", e => {
+  if (document.body.classList.contains("locked")) return;
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#palette").classList.contains("on") ? closePalette() : openPalette(); return; }
   if (e.key === "Escape") { if ($("#palette").classList.contains("on")) closePalette(); else if ($("#modal").classList.contains("on")) closeModal(); else closeDrawer(); $("#fabMenu").classList.remove("on"); return; }
@@ -3178,6 +3319,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { 
 let wasMobile = isMobile();
 window.addEventListener("resize", () => { clearTimeout(window._rz); window._rz = setTimeout(() => { if (isMobile() !== wasMobile) { wasMobile = isMobile(); render({ keepScroll:true }); } }, 200); });
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") sync(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") hiddenAt = Date.now(); else if (hiddenAt && Date.now() - hiddenAt > 60000) showLock(); });
 window.addEventListener("online", () => sync());
 setInterval(() => { if (document.visibilityState === "visible") sync(); }, 120000);
 window.addEventListener("storage", e => { if (e.key === SY_KEY) { try { SY = JSON.parse(e.newValue) || {}; } catch (er) { SY = {}; } renderSide(); } });
@@ -3190,7 +3332,13 @@ window.addEventListener("storage", e => { if (e.key === LS_KEY && e.newValue) { 
   load();
   const h = location.hash.slice(1); if (VIEWS[h]) view = h;
   render();
+  // Atajos del ícono (mantener presionado en Android): ?nuevo=gasto o ?nuevo=cobro
+  const nuevo = new URLSearchParams(location.search).get("nuevo");
+  if (nuevo) { const u = new URL(location.href); u.searchParams.delete("nuevo"); history.replaceState(null, "", u.pathname + u.search + u.hash); }
+  const atajo = () => { if (nuevo === "gasto") openForm("txns"); else if (nuevo === "cobro") { go("cobros"); openForm("cobros", null, { fecha:localISO() }); } };
   if (!S.settings.onboarded && !syncOn() && !/[?&]nowizard/.test(location.search)) wizard(0);
+  else if (pinGet()) { onUnlock = atajo; showLock(); }
+  else atajo();
   sync();
   if (window.isSecureContext && location.protocol !== "file:" && "serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => { /* sin modo sin conexión */ });
   try {
