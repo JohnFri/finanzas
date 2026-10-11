@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3056d3">
+<meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<title>Finanzas Familiares</title>
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--pri:#3056d3;--bad:#dc2626}
+@media (prefers-color-scheme:dark){:root{--bg:#0b1020;--card:#121a2e;--ink:#e5e9f2;--muted:#94a3b8;--line:#243049}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+main{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px}
+.mark{width:48px;height:48px;border-radius:14px;background:var(--pri);color:#fff;display:grid;place-items:center;font:700 26px Arial;margin-bottom:12px}
+h1{font-size:20px;margin:0 0 4px}
+p{color:var(--muted);margin:0 0 16px;font-size:14px}
+label{display:block;font-weight:600;font-size:13px;margin:12px 0 4px}
+input{width:100%;font-size:16px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:transparent;color:inherit}
+button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:12px;background:var(--pri);color:#fff;font-size:16px;font-weight:600}
+button:disabled{opacity:.6}
+.err{color:var(--bad);font-size:14px;margin-top:12px;min-height:1em}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--pri);border-radius:50%;animation:s 1s linear infinite;margin:8px auto}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<main id="m"><div class="spin"></div></main>
+<script>
+"use strict";
+/* ---------- sincronización cifrada entre aparatos (Gist secreto de GitHub) ----------
+   Los datos se cifran aquí (AES-256-GCM, llave PBKDF2 de la contraseña) antes de salir;
+   GitHub solo guarda texto ilegible. */
+const SYNC_FILE = "finanzas-familia.cifrado.json", APP_FILE = "finanzas-familia.app.cifrado.json", KDF_ITER = 600000; // OWASP 2023 para PBKDF2-SHA256
+const b64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const keyCache = new Map(); // derivar cuesta ~0.5 s: una vez por contraseña+sal
+async function deriveKey(pass, salt, iter) {
+  const id = `${iter}|${salt}|${pass}`;
+  if (!keyCache.has(id)) {
+    const subtle = globalThis.crypto.subtle;
+    const base = await subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+    keyCache.set(id, await subtle.deriveKey({ name:"PBKDF2", hash:"SHA-256", salt:unb64(salt), iterations:iter }, base, { name:"AES-GCM", length:256 }, false, ["encrypt", "decrypt"]));
+  }
+  return keyCache.get(id);
+}
+async function seal(data, pass, { salt, ...meta } = {}) {
+  salt = salt || b64(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12)), key = await deriveKey(pass, salt, KDF_ITER);
+  const ct = await globalThis.crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(data)));
+  return { app:"finanzas-familia", v:1, kdf:{ name:"PBKDF2-SHA256", iter:KDF_ITER, salt }, iv:b64(iv), ct:b64(new Uint8Array(ct)), ...meta };
+}
+async function unseal(blob, pass) {
+  if (!blob || blob.app !== "finanzas-familia" || !blob.kdf) throw new Error("Lo que hay en la nube no es de esta app");
+  const key = await deriveKey(pass, blob.kdf.salt, blob.kdf.iter);
+  let pt;
+  try { pt = await globalThis.crypto.subtle.decrypt({ name:"AES-GCM", iv:unb64(blob.iv) }, key, unb64(blob.ct)); }
+  catch (e) { throw Object.assign(new Error("La contraseña no abre los datos de la nube"), { code:"pass" }); }
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+/* Qué hacer al comparar: «rev» cambia en cada subida; «dirty» = hay cambios locales sin subir */
+function syncDecide({ remoteRev, lastRev, dirty }) {
+  if (remoteRev == null) return "push";
+  if (remoteRev === lastRev) return dirty ? "push" : "none";
+  return dirty ? "conflict" : "pull";
+}
+/* Cliente mínimo de la API de Gists. Techo: no hay bloqueo optimista (los Gists no respetan If-Match);
+   si dos aparatos suben en el mismo segundo gana el último. Salida: guardar en un repo con la API de contents (sha). */
+function gist(token, fetchFn = (...a) => globalThis.fetch(...a)) {
+  const call = async (path, opt = {}) => {
+    let r;
+    try {
+      r = await fetchFn("https://api.github.com" + path, { ...opt, cache:"no-store", headers:{ Accept:"application/vnd.github+json", Authorization:`Bearer ${token}`, "X-GitHub-Api-Version":"2022-11-28", ...(opt.body ? { "Content-Type":"application/json" } : {}) } });
+    } catch (e) { throw Object.assign(new Error("Sin conexión con GitHub"), { code:"net" }); }
+    if (r.status === 401) throw Object.assign(new Error("El token de GitHub no sirve o ya venció"), { code:401 });
+    if (r.status === 404) throw Object.assign(new Error("No se encontró el Gist (¿lo borraron, o el token no tiene permiso de Gist?)"), { code:404 });
+    if (!r.ok) throw Object.assign(new Error(`GitHub respondió ${r.status}`), { code:r.status });
+    return r.json();
+  };
+  const files = (blob, name) => ({ [name]:{ content:JSON.stringify(blob) } });
+  return {
+    async find(name = SYNC_FILE) {
+      for (let p = 1; p <= 10; p++) {
+        const list = await call(`/gists?per_page=100&page=${p}`), g = list.find(x => x.files && x.files[name]);
+        if (g) return g.id;
+        if (list.length < 100) return null;
+      }
+      return null;
+    },
+    async get(id, name = SYNC_FILE) {
+      const f = (await call(`/gists/${id}`)).files?.[name];
+      if (!f) return null;
+      return JSON.parse(f.truncated ? await (await fetchFn(f.raw_url, { cache:"no-store" })).text() : f.content); // la API corta en 1 MB
+    },
+    async create(blob, name = SYNC_FILE) { return (await call("/gists", { method:"POST", body:JSON.stringify({ description:`Finanzas Familiares — ${name === APP_FILE ? "app" : "datos"} cifrados`, public:false, files:files(blob, name) }) })).id; },
+    async put(id, blob, name = SYNC_FILE) { await call(`/gists/${id}`, { method:"PATCH", body:JSON.stringify({ files:files(blob, name) }) }); }
+  };
+}
+
+
+const SY_KEY = "finanzas-familia-sync", APP_KEY = "finanzas-familia-app";
+const $ = s => document.querySelector(s);
+const sy = () => { try { return JSON.parse(localStorage.getItem(SY_KEY)) || {}; } catch (e) { return {}; } };
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(Object.assign(new Error("Sin conexión con GitHub"), { code:"net" })), ms))]);
+
+function form(msg = "") {
+  $("#m").innerHTML = `<div class="mark">$</div><h1>Finanzas Familiares</h1>
+    <p>Pon el mismo token de GitHub y la misma contraseña que usaste en la computadora. La app y sus datos llegan cifrados.</p>
+    <form id="f" autocomplete="off"><label for="t">Token de GitHub</label><input id="t" type="password" required spellcheck="false" placeholder="ghp_…">
+    <label for="p">Contraseña de cifrado</label><input id="p" type="password" required minlength="8" autocomplete="current-password">
+    <button id="b">Abrir</button><div class="err" id="e"></div></form>`;
+  $("#e").textContent = msg;
+  $("#f").addEventListener("submit", async e => {
+    e.preventDefault(); $("#b").disabled = true; $("#b").textContent = "Abriendo…"; $("#e").textContent = "";
+    const token = $("#t").value.trim(), pass = $("#p").value;
+    try {
+      const gh = gist(token), gistId = await gh.find(), appGistId = await gh.find(APP_FILE);
+      if (!gistId || !appGistId) throw new Error("No encontré la app en tu GitHub. Primero conecta la sincronización en la computadora.");
+      const data = await gh.get(gistId); await unseal(data, pass); // valida la contraseña
+      localStorage.setItem(SY_KEY, JSON.stringify({ token, pass, gistId, appGistId, rev:null, salt:data.kdf.salt, dirty:false }));
+      boot();
+    } catch (err) { $("#b").disabled = false; $("#b").textContent = "Abrir"; $("#e").textContent = err.message; }
+  });
+}
+
+async function boot() {
+  const c = sy();
+  if (!c.token || !c.pass || !c.appGistId) return form();
+  let blob = null, cached = null;
+  try { cached = JSON.parse(localStorage.getItem(APP_KEY)); } catch (e) { /* sin copia */ }
+  try {
+    blob = await withTimeout(gist(c.token).get(c.appGistId, APP_FILE), cached ? 5000 : 20000);
+    if (blob) try { localStorage.setItem(APP_KEY, JSON.stringify(blob)); } catch (e) { /* sin espacio: se baja cada vez */ }
+  } catch (e) {
+    if (e.code === 401) return form(e.message);
+    blob = cached; // sin internet: la última versión guardada
+  }
+  if (!blob) return form("Sin conexión y todavía sin copia guardada en este celular.");
+  let html;
+  try { html = await unseal(blob, c.pass); } catch (e) { return form(e.message); }
+  document.open(); document.write(html); document.close();
+}
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => { /* sin modo sin conexión */ });
+boot();
+</script>
+</body>
+</html>
