@@ -659,6 +659,31 @@ body.priv .amt:hover,body.priv td.r:hover{filter:none}
   .cobro.done{flex-direction:row}
 }
 
+/* Me deben: fichas */
+.dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.dcard{text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:14px;padding:14px;cursor:pointer;color:inherit;font:inherit;display:flex;flex-direction:column;gap:2px;transition:border-color .12s,transform .1s}
+.dcard:hover{border-color:var(--primary);transform:translateY(-1px)}
+.dcard.zero{opacity:.8}
+.dc-ic{font-size:24px;line-height:1}
+.dc-n{font-size:16px;margin-top:6px}
+.dc-amt{font-size:22px;font-weight:700;margin:8px 0 2px;font-variant-numeric:tabular-nums}
+.linkbtn{border:0;background:none;color:var(--primary);font:inherit;font-weight:700;letter-spacing:inherit;text-transform:inherit;cursor:pointer;padding:0}
+.tdstrip{width:100%;display:flex;align-items:center;gap:14px;padding:14px 18px;text-align:left;cursor:pointer;color:inherit;font:inherit;border:1px solid var(--line)}
+.tdstrip:hover{border-color:var(--good)}
+.tdstrip .ico{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:var(--good-soft);color:var(--good);flex:none}
+.tdstrip .ico svg{width:20px;height:20px}
+.tdstrip .td-main{flex:1;min-width:0}
+.tdstrip .lbl{font-size:12.5px;color:var(--muted);font-weight:600}
+.tdstrip .val{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.tdstrip .td-side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}
+.tdstrip .td-side svg{width:14px;height:14px;vertical-align:-2px}
+@media (max-width:860px){ .dgrid{grid-template-columns:1fr 1fr} .dc-amt{font-size:18px} .tdstrip{padding:12px 14px} }
+@media (max-width:380px){ .dgrid{grid-template-columns:1fr} }
+
+a.btn{text-decoration:none}
+.dh-act{flex-wrap:wrap}
+@media (max-width:860px){ .ph .row.dh-act{overflow:visible;flex-wrap:wrap} .dh-act .btn{flex:1 1 auto;justify-content:center} .dh-act .btn.primary{flex-basis:100%} }
+
 @media (min-width:861px){.fab,.fab-menu{display:none!important}}
 </style>
 </head>
@@ -1154,7 +1179,7 @@ function seed() {
     txns:[],
     
     goals:[ { id:uid(), nombre:"Fondo para emergencias", tipo:"Ahorro", monto:"", ahorrado:"", fecha:"", notas:"Para no pedir prestado cuando salga algo." } ],
-    cobros:[],
+    deudores:[], cobros:[],
     scratch:{ debts:[], budget:"" },
     paid:{}, snapshots:[], answers:{}
   };
@@ -1172,6 +1197,22 @@ function migrate(d) {
     if (!d.settings.baseline && d.snapshots && d.snapshots[0]) d.settings.baseline = { ...d.snapshots[0] };
     if (d.settings.onboarded === false && (d.cards.some(c => has(c.saldo)) || d.txns.length)) d.settings.onboarded = true;
     d.version = 2;
+  }
+  linkDeudores(d);
+  return d;
+}
+
+/* ---------- Me deben: cada cuenta cuelga de una ficha (persona o empresa) ---------- */
+const normName = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+function linkDeudores(d) {
+  d.deudores = Array.isArray(d.deudores) ? d.deudores : [];
+  d.cobros = Array.isArray(d.cobros) ? d.cobros : [];
+  for (const c of d.cobros) {
+    if (c.deudorId && d.deudores.some(x => x.id === c.deudorId)) continue;
+    const name = String(c.persona || "").trim() || "Sin nombre";
+    let x = d.deudores.find(y => normName(y.nombre) === normName(name));
+    if (!x) { x = { id:uid(), nombre:name, tipo:"Persona", telefono:"", notas:"" }; d.deudores.push(x); }
+    c.deudorId = x.id;
   }
   return d;
 }
@@ -1254,7 +1295,7 @@ function gist(token, fetchFn = (...a) => globalThis.fetch(...a)) {
 
 const api = { VERSION, FREQ, MESES, PERSONAS, SINO, CATS, setIva, getIva, num, has, pad, localISO, monthKey, addMonths, monthName,
   daysBetween, fm, fp, fmtDate, uid, fq, sum, C, totals, pool, METHODS, simulatePool, simulate, minBudget, budgetForMonths, loan, consolidate, transfer, flujo, quincenas, monthItems, nextDue, alerts,
-  achievements, autoSnapshot, seed, migrate, validateBackup, netoDeBruto, DIAS_SEM, weekdayCount, SYNC_FILE, APP_FILE, seal, unseal, syncDecide, gist };
+  achievements, autoSnapshot, seed, migrate, validateBackup, normName, linkDeudores, netoDeBruto, DIAS_SEM, weekdayCount, SYNC_FILE, APP_FILE, seal, unseal, syncDecide, gist };
 if (typeof module !== "undefined" && module.exports) module.exports = api;
 root.Core = api;
 })(typeof window !== "undefined" ? window : globalThis);
@@ -1448,9 +1489,15 @@ const SCHEMAS = {
     {k:"quien", l:"Quién", t:"select", o:personas},
     {k:"notas", l:"Notas", t:"textarea", full:true}
   ]},
-  cobros:{ title:"cuenta por cobrar", fields:[
-    {k:"persona", l:"¿Quién te debe?", t:"text", req:true, ph:"Nombre", sug:() => [...new Set(S.cobros.map(c => c.persona).filter(Boolean))].sort()},
-    {k:"concepto", l:"¿De qué?", t:"text", ph:"Ej. préstamo, venta de ropa, tanda"},
+  deudores:{ title:"persona o empresa", fields:[
+    {k:"nombre", l:"Nombre", t:"text", req:true, ph:"Ej. Doña Lupe, Ferretería López", full:true},
+    {k:"tipo", l:"Es", t:"select", o:["Persona","Familiar","Cliente","Empresa","Otro"]},
+    {k:"telefono", l:"Teléfono (para recordarle por WhatsApp)", t:"text", ph:"10 dígitos"},
+    {k:"notas", l:"Notas", t:"textarea", full:true}
+  ]},
+  cobros:{ title:"deuda", fields:[
+    {k:"persona", l:"¿Quién te debe?", t:"text", req:true, ph:"Persona o empresa", sug:() => S.deudores.map(d => d.nombre).sort(), help:"Si es alguien nuevo, se le crea su ficha."},
+    {k:"concepto", l:"Descripción", t:"text", ph:"Ej. préstamo, venta de ropa, tanda"},
     {k:"monto", l:"¿Cuánto te debe?", t:"money", req:true},
     {k:"fecha", l:"¿Desde cuándo?", t:"date"},
     {k:"compromiso", l:"Quedó de pagar el", t:"date", help:"Opcional. Si pasa la fecha, sale como vencido."},
@@ -1867,6 +1914,7 @@ function vResumen() {
     ${kpi({ label:"Colchón", value:T.colchon === null ? "—" : T.colchon.toFixed(1) + " meses", ic:"shield", tone:"teal", foot:`${status(T.colchon, 3, 1, true)} Meta: 3 a 6 meses` })}
     ${kpi({ label:"Ingreso que va a deudas", value:fp(T.dti), ic:"debt", tone:"violet", foot:`${status(T.dti, .2, .36)} Mínimos + otras deudas` })}
   </div>
+  ${teDebenStrip()}
   <div class="grid g21 mt">
     ${panel("¿A dónde se va el dinero?", `<div class="donut-wrap">${donut(outs)}<div class="legend">${outs.slice(0, 9).map(i => `<div class="li"><i style="background:${i.c}"></i><span>${esc(i.l)}</span><em class="amt">${fm(i.v)}</em></div>`).join("")}</div></div>`, { sub:"equivalente mensual" })}
     ${panel("Avisos", `<div class="alerts">${A.slice(0, 5).map(a => `<div class="alert ${a.tone}"><span class="ai">${a.icon}</span><div><span class="at">${esc(a.title)}</span><span class="det">${esc(a.text)}</span></div></div>`).join("")}</div>`, { sub:A.length > 5 ? `+${A.length - 5} más` : "" })}
@@ -2342,46 +2390,113 @@ function vAhorros() {
     { h:"Saldo / valor", cls:"r", v:s => `<b>${fm(s.saldo)}</b>` }], S.savings), { cls:"flush" })}</div>`;
 }
 
-/* ---------- Me deben (cuaderno de cuentas por cobrar) ---------- */
+/* ---------- Me deben: fichas de personas o empresas, cada una con sus cuentas ---------- */
 const cAbonado = c => K.sum(c.abonos || [], a => num(a.monto));
 const cSaldo = c => Math.max(0, Math.round((num(c.monto) - cAbonado(c)) * 100) / 100);
-const cKey = p => norm(p).trim() || "sin nombre";
-function vCobros() {
-  const hoy = localISO(), mk = monthKey(), q = norm(sub.cobq || "");
-  const pend = S.cobros.filter(c => !c.liquidado), paid = S.cobros.filter(c => c.liquidado).sort((a, b) => b.liquidado.localeCompare(a.liquidado));
+const deudor = id => S.deudores.find(x => x.id === id);
+const cuentasDe = id => S.cobros.filter(c => c.deudorId === id);
+const cName = c => deudor(c.deudorId)?.nombre || c.persona || "Sin nombre";
+/* Busca la ficha por nombre (sin importar acentos ni mayúsculas) o la crea */
+function deudorFor(name) {
+  const n = (name || "").trim() || "Sin nombre";
+  let x = S.deudores.find(d => K.normName(d.nombre) === K.normName(n));
+  if (!x) { x = { id:uid(), nombre:n, tipo:"Persona", telefono:"", notas:"" }; S.deudores.push(x); }
+  return x;
+}
+function dStats(id) {
+  const list = cuentasDe(id), pend = list.filter(c => !c.liquidado), hoy = localISO();
   const venc = pend.filter(c => c.compromiso && c.compromiso < hoy);
+  const moves = list.flatMap(c => [c.fecha || "", ...(c.abonos || []).map(a => a.fecha || "")]).filter(Boolean).sort();
+  return { list, pend, venc, total:K.sum(pend, cSaldo), abonado:K.sum(list, cAbonado), last:moves[moves.length - 1] || "" };
+}
+const waLink = (d, s) => {
+  const tel = String(d.telefono || "").replace(/\D/g, ""); if (tel.length < 10) return "";
+  const msg = `Hola ${d.nombre}, ¿cómo estás? Te escribo para recordarte lo pendiente: ${s.pend.map(c => `${c.concepto || "cuenta"} (${fm(cSaldo(c))})`).join(", ")}. En total ${fm(s.total)}. ¡Gracias!`;
+  return `https://wa.me/${tel.length === 10 ? "52" + tel : tel}?text=${encodeURIComponent(msg)}`;
+};
+const TIPO_ICON = { "Persona":"🙋", "Familiar":"👪", "Cliente":"🛍️", "Empresa":"🏢", "Otro":"📁" };
+
+function vCobros() {
+  if (sub.deudor && deudor(sub.deudor)) return vDeudor(deudor(sub.deudor));
+  const hoy = localISO(), mk = monthKey(), q = K.normName(sub.cobq || "");
+  const pend = S.cobros.filter(c => !c.liquidado), venc = pend.filter(c => c.compromiso && c.compromiso < hoy);
   const cobradoMes = K.sum(S.cobros, c => K.sum((c.abonos || []).filter(a => monthKey(a.fecha) === mk), a => num(a.monto)));
-  const groups = {};
-  for (const c of pend) (groups[cKey(c.persona)] = groups[cKey(c.persona)] || { name:c.persona || "Sin nombre", list:[] }).list.push(c);
-  const people = Object.values(groups).map(g => ({ ...g, total:K.sum(g.list, cSaldo) }))
-    .filter(g => !q || norm(g.name + " " + g.list.map(c => c.concepto).join(" ")).includes(q)).sort((a, b) => b.total - a.total);
+  const orden = sub.cobord || "monto";
+  const fichas = S.deudores.map(d => ({ d, s:dStats(d.id) }))
+    .filter(({ d, s }) => !q || K.normName(d.nombre + " " + d.tipo + " " + s.list.map(c => c.concepto).join(" ")).includes(q))
+    .sort((a, b) => orden === "nombre" ? a.d.nombre.localeCompare(b.d.nombre) : orden === "reciente" ? b.s.last.localeCompare(a.s.last) : (b.s.total - a.s.total) || a.d.nombre.localeCompare(b.d.nombre));
+  const conDeuda = S.deudores.filter(d => dStats(d.id).total > 0).length;
+  const card = ({ d, s }) => `<button class="dcard ${s.total ? "" : "zero"}" data-deudor="${d.id}">
+      <div class="between"><span class="dc-ic">${TIPO_ICON[d.tipo] || "🙋"}</span>${s.venc.length ? pill(`${s.venc.length} vencida${s.venc.length > 1 ? "s" : ""}`, "bad") : s.total ? "" : pill("Al corriente ✓", "good")}</div>
+      <div class="b dc-n">${esc(d.nombre)}</div><div class="tiny muted">${esc(d.tipo || "Persona")} · ${s.pend.length} cuenta${s.pend.length === 1 ? "" : "s"} pendiente${s.pend.length === 1 ? "" : "s"}</div>
+      <div class="dc-amt">${M(s.total)}</div><div class="tiny muted">${s.last ? `Último movimiento: ${fmtDate(s.last)}` : "Sin movimientos"}</div></button>`;
+  return ph("Me deben", "Una ficha por persona o empresa, con todas sus cuentas, abonos y fechas.", `<button class="btn" data-add="cobros">${icon("plus")} Anotar deuda</button><button class="btn primary" data-add="deudores">${icon("users")} Persona o empresa</button>`, "Lo que tienen") +
+  `<div class="grid g4">${kpi({ label:"Te deben en total", value:M(K.sum(pend, cSaldo)), ic:"users", tone:"good", foot:`${conDeuda} con saldo pendiente` })}
+    ${kpi({ label:"Vencidos", value:M(K.sum(venc, cSaldo), venc.length ? "bad" : ""), ic:"alert", tone:venc.length ? "bad" : "primary", foot:venc.length ? `${venc.length} ya pasaron su fecha` : "Ninguno" })}
+    ${kpi({ label:"Te pagaron este mes", value:M(cobradoMes), ic:"cash", tone:"teal", foot:"Abonos y pagos completos" })}
+    ${kpi({ label:"Fichas", value:String(S.deudores.length), ic:"list", tone:"primary", foot:"Personas y empresas" })}</div>
+  ${S.deudores.length ? `<div class="toolbar mt"><input class="inp" type="search" placeholder="Buscar persona, empresa o concepto…" value="${esc(sub.cobq || "")}" data-filter="cobq" aria-label="Buscar">
+    <div class="seg">${[["monto", "Más deben"], ["reciente", "Recientes"], ["nombre", "A–Z"]].map(([k, l]) => `<button class="${orden === k ? "on" : ""}" data-cobord="${k}">${l}</button>`).join("")}</div></div>` : ""}
+  <div class="dgrid mt">${fichas.map(card).join("") || `<div style="grid-column:1/-1">${panel("", S.deudores.length ? empty("search", "Nadie con ese nombre", "") : empty("users", "Todavía no hay nada anotado", "Crea una ficha por cada persona o empresa que te debe, y adentro anota sus cuentas.", `<button class="btn primary" data-add="deudores">${icon("plus")} Crear la primera ficha</button>`))}</div>`}</div>`;
+}
+
+function vDeudor(d) {
+  const s = dStats(d.id), hoy = localISO(), wa = waLink(d, s);
+  const paid = s.list.filter(c => c.liquidado).sort((a, b) => b.liquidado.localeCompare(a.liquidado));
   const row = c => {
-    const s = cSaldo(c), ab = cAbonado(c), late = c.compromiso && c.compromiso < hoy;
+    const sl = cSaldo(c), ab = cAbonado(c), late = c.compromiso && c.compromiso < hoy;
     return `<div class="cobro">
-      <div class="cb-main"><div class="b">${esc(c.concepto || "Sin concepto")} ${late ? pill("Vencido", "bad") : ""}</div>
-        <div class="tiny muted">${[c.fecha ? `Desde el ${fmtDate(c.fecha)}` : "", c.compromiso ? `quedó de pagar el ${fmtDate(c.compromiso)}` : ""].filter(Boolean).join(" · ")}</div>
+      <div class="cb-main"><div class="b">${esc(c.concepto || "Sin descripción")} ${late ? pill("Vencida", "bad") : ""}</div>
+        <div class="tiny muted">${[`Monto ${fm(c.monto)}`, c.fecha ? `desde el ${fmtDate(c.fecha)}` : "", c.compromiso ? `quedó de pagar el ${fmtDate(c.compromiso)}` : ""].filter(Boolean).join(" · ")}</div>
+        ${c.notas ? `<div class="tiny">${esc(c.notas)}</div>` : ""}
         ${ab > 0 ? `${bar(ab / num(c.monto), "good", "thin")}<div class="tiny">Ha abonado ${M(ab)} de ${M(c.monto)}</div>` : ""}
         ${(c.abonos || []).length ? `<details class="cb-ab"><summary class="tiny">Ver abonos (${c.abonos.length})</summary>${c.abonos.map(a => `<div class="between tiny"><span>${fmtDate(a.fecha)}${a.nota ? ` · ${esc(a.nota)}` : ""}</span><span>${M(a.monto)} <button class="iconbtn del" data-delabono="${c.id}:${a.id}" aria-label="Borrar abono">${icon("x")}</button></span></div>`).join("")}</details>` : ""}
       </div>
-      <div class="cb-side"><div class="cb-amt">${M(s)}</div><div class="tiny muted">le falta</div>
-        <div class="row cb-btns"><button class="btn sm" data-abono="${c.id}">Abono</button><button class="btn sm primary" data-liquidar="${c.id}">${icon("check")} Ya pagó</button><button class="iconbtn" data-edit="cobros:${c.id}" aria-label="Editar">${icon("edit")}</button></div></div>
+      <div class="cb-side"><div class="cb-amt">${M(sl)}</div><div class="tiny muted">le falta</div>
+        <div class="row cb-btns"><button class="btn sm" data-abono="${c.id}">Abono</button><button class="btn sm primary" data-liquidar="${c.id}">${icon("check")} Ya pagó</button><button class="iconbtn" data-edit="cobros:${c.id}" aria-label="Editar">${icon("edit")}</button><button class="iconbtn del" data-del="cobros:${c.id}" aria-label="Quitar">${icon("trash")}</button></div></div>
     </div>`;
   };
-  return ph("Me deben", "Tu cuaderno de cuentas: quién te debe, lo que ha abonado y lo que le falta.", `<button class="btn primary" data-add="cobros">${icon("plus")} Anotar</button>`, "Lo que tienen") +
-  `<div class="grid g4">${kpi({ label:"Te deben en total", value:M(K.sum(pend, cSaldo)), ic:"users", tone:"good", foot:`${Object.keys(groups).length} persona${Object.keys(groups).length === 1 ? "" : "s"}` })}
-    ${kpi({ label:"Vencidos", value:M(K.sum(venc, cSaldo), venc.length ? "bad" : ""), ic:"alert", tone:venc.length ? "bad" : "primary", foot:venc.length ? `${venc.length} ya pasaron su fecha` : "Ninguno" })}
-    ${kpi({ label:"Te pagaron este mes", value:M(cobradoMes), ic:"cash", tone:"teal", foot:"Abonos y pagos completos" })}
-    ${kpi({ label:"Ya liquidados", value:String(paid.length), ic:"check", tone:"primary", foot:"Cuentas tachadas" })}</div>
-  ${S.cobros.length ? `<div class="toolbar mt"><input class="inp" type="search" placeholder="Buscar persona o concepto…" value="${esc(sub.cobq || "")}" data-filter="cobq" aria-label="Buscar"></div>` : ""}
-  <div class="grid g2 mt">${people.map(g => panel(esc(g.name), g.list.map(row).join(""), { sub:`Le falta ${fm(g.total)}`, cls:"flush cobro-p" })).join("") ||
-    `<div style="grid-column:1/-1">${panel("", S.cobros.length && pend.length ? empty("search", "Nadie con ese nombre", "") : empty("users", pend.length || paid.length ? "Nadie te debe nada 🎉" : "Todavía no hay nada anotado", "Pasa aquí las cuentas de tu cuaderno: quién te debe, de qué y cuánto.", `<button class="btn primary" data-add="cobros">${icon("plus")} Anotar la primera</button>`))}</div>`}</div>
-  ${paid.length ? `<div class="mt">${panel("Ya pagaron ✓", paid.map(c => `<div class="cobro done"><div class="cb-main"><s><b>${esc(c.persona || "")}</b> · ${esc(c.concepto || "")} · ${fm(c.monto)}</s><div class="tiny muted">Liquidó el ${fmtDate(c.liquidado)}</div></div>
-      <div class="row"><button class="btn sm ghost" data-reabrir="${c.id}">Deshacer</button><button class="iconbtn del" data-del="cobros:${c.id}" aria-label="Borrar">${icon("trash")}</button></div></div>`).join(""), { cls:"flush" })}</div>` : ""}`;
+  // Estado de cuenta: cada cargo y cada abono en orden, con saldo corrido
+  const mov = s.list.flatMap(c => [{ f:c.fecha || "", t:c.concepto || "Cuenta", m:num(c.monto) }, ...(c.abonos || []).map(a => ({ f:a.fecha || "", t:`Abono${a.nota ? " · " + a.nota : ""} (${c.concepto || "cuenta"})`, m:-num(a.monto) }))])
+    .sort((a, b) => a.f.localeCompare(b.f) || b.m - a.m);
+  let run = 0;
+  const ledger = mov.map(x => { run += x.m; return `<tr><td>${x.f ? fmtDate(x.f) : "—"}</td><td>${esc(x.t)}</td><td class="r ${x.m < 0 ? "good" : ""}">${x.m < 0 ? "−" + fm(-x.m) : fm(x.m)}</td><td class="r b">${fm(Math.max(0, run))}</td></tr>`; }).join("");
+  return `<div class="ph"><div><div class="eyebrow"><button class="linkbtn" data-deudor="">← Me deben</button></div><h1>${TIPO_ICON[d.tipo] || "🙋"} ${esc(d.nombre)}</h1>
+      <p>${esc(d.tipo || "Persona")}${d.telefono ? ` · <a href="tel:${esc(String(d.telefono).replace(/\s/g, ""))}">${esc(d.telefono)}</a>` : ""}${d.notas ? ` · ${esc(d.notas)}` : ""}</p></div>
+    <div class="row dh-act"><button class="btn primary" data-addcobro="${d.id}">${icon("plus")} Agregar deuda</button>${wa ? `<a class="btn" href="${wa}" target="_blank" rel="noopener">💬 Recordar por WhatsApp</a>` : ""}<button class="btn" data-edit="deudores:${d.id}">${icon("edit")} Editar ficha</button></div></div>
+  <div class="grid g4">${kpi({ label:"Le falta pagar", value:M(s.total), ic:"users", tone:s.total ? "good" : "primary", foot:`${s.pend.length} cuenta${s.pend.length === 1 ? "" : "s"} pendiente${s.pend.length === 1 ? "" : "s"}` })}
+    ${kpi({ label:"Vencidas", value:M(K.sum(s.venc, cSaldo), s.venc.length ? "bad" : ""), ic:"alert", tone:s.venc.length ? "bad" : "primary", foot:s.venc.length ? `${s.venc.length} pasaron su fecha` : "Ninguna" })}
+    ${kpi({ label:"Ha abonado", value:M(s.abonado), ic:"cash", tone:"teal", foot:"En todas sus cuentas" })}
+    ${kpi({ label:"Ya liquidadas", value:String(paid.length), ic:"check", tone:"primary", foot:"Cuentas tachadas" })}</div>
+  <div class="mt">${panel("Cuentas pendientes", s.pend.map(row).join("") || empty("check", s.list.length ? "No te debe nada 🎉" : "Sin cuentas todavía", "", `<button class="btn primary" data-addcobro="${d.id}">${icon("plus")} Agregar deuda</button>`), { cls:"flush" })}</div>
+  ${mov.length ? `<div class="mt">${panel("Estado de cuenta", `<div class="tbl"><table class="keep"><thead><tr><th>Fecha</th><th>Movimiento</th><th class="r">Monto</th><th class="r">Saldo</th></tr></thead><tbody>${ledger}</tbody></table></div>`, { cls:"flush", sub:"Como en el cuaderno: lo que te quedó a deber y lo que te ha dado" })}</div>` : ""}
+  ${paid.length ? `<div class="mt">${panel("Ya pagadas ✓", paid.map(c => `<div class="cobro done"><div class="cb-main"><s>${esc(c.concepto || "Cuenta")} · ${fm(c.monto)}</s><div class="tiny muted">Liquidó el ${fmtDate(c.liquidado)}</div></div>
+      <div class="row"><button class="btn sm ghost" data-reabrir="${c.id}">Deshacer</button><button class="iconbtn del" data-del="cobros:${c.id}" aria-label="Borrar">${icon("trash")}</button></div></div>`).join(""), { cls:"flush" })}</div>` : ""}
+  <div class="mt"><button class="btn danger sm" data-deldeudor="${d.id}">${icon("trash")} Borrar ficha</button></div>`;
+}
+/* Total de «Me deben» en el Resumen */
+function teDebenStrip() {
+  if (!S.deudores.length) return "";
+  const pend = S.cobros.filter(c => !c.liquidado), hoy = localISO(), venc = pend.filter(c => c.compromiso && c.compromiso < hoy);
+  const top = S.deudores.map(d => ({ d, t:dStats(d.id).total })).filter(x => x.t > 0).sort((a, b) => b.t - a.t);
+  return `<button class="panel tdstrip mt" data-go="cobros"><span class="ico">${icon("users")}</span>
+    <div class="td-main"><div class="lbl">Te deben</div><div class="val">${M(K.sum(pend, cSaldo))}</div>
+    <div class="tiny muted">${top.length ? top.slice(0, 3).map(x => `${esc(x.d.nombre)} ${fm(x.t)}`).join(" · ") + (top.length > 3 ? ` · y ${top.length - 3} más` : "") : "Nadie te debe nada 🎉"}</div></div>
+    <div class="td-side">${venc.length ? pill(`${venc.length} vencida${venc.length > 1 ? "s" : ""}`, "bad") : ""}<span class="tiny">Ver ${icon("chevr")}</span></div></button>`;
+}
+function delDeudor(id) {
+  const d = deudor(id); if (!d) return;
+  const list = cuentasDe(id), pend = list.filter(c => !c.liquidado);
+  if (!confirm(`¿Borrar la ficha de ${d.nombre}?${list.length ? `\n\nTambién se borran sus ${list.length} cuenta${list.length > 1 ? "s" : ""}${pend.length ? ` (${pend.length} pendiente${pend.length > 1 ? "s" : ""} por ${fm(K.sum(pend, cSaldo))})` : ""}.` : ""}`)) return;
+  const snap = { d, list, idx:S.deudores.indexOf(d) };
+  S.deudores = S.deudores.filter(x => x.id !== id); S.cobros = S.cobros.filter(c => c.deudorId !== id);
+  sub.deudor = ""; persist(); render();
+  toast(`Ficha borrada: ${d.nombre}`, { label:"Deshacer", fn:() => { S.deudores.splice(snap.idx, 0, snap.d); S.cobros.push(...snap.list); persist(); render(); } });
 }
 function abonoForm(id) {
   const c = S.cobros.find(x => x.id === id); if (!c) return;
   const s = cSaldo(c), fields = [{ k:"monto", l:"¿Cuánto te dio?", t:"money", req:true }, { k:"fecha", l:"Fecha", t:"date", req:true }, { k:"nota", l:"Nota", t:"text", ph:"Opcional", full:true }];
-  openModal(`<form id="frm" novalidate><header><div><h2>Abono de ${esc(c.persona || "")}</h2><p>${esc(c.concepto || "")} · le falta ${fm(s)}</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
+  openModal(`<form id="frm" novalidate><header><div><h2>Abono de ${esc(cName(c))}</h2><p>${esc(c.concepto || "")} · le falta ${fm(s)}</p></div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
     <div class="mb"><div class="form">${fieldHTML(fields[0], "")}${fieldHTML(fields[1], localISO())}${fieldHTML(fields[2], "")}</div></div>
     <footer><span></span><div class="row"><button type="button" class="btn" data-act="close">Cancelar</button><button class="btn primary" type="submit">${icon("check")} Anotar abono</button></div></footer></form>`, { size:"sm" });
   $("#frm").onsubmit = ev => {
@@ -2389,24 +2504,24 @@ function abonoForm(id) {
     const out = readForm(ev.target, fields); if (!out) return;
     if (out.monto <= 0) { toast("Escribe cuánto te dio"); return; }
     const liquida = out.monto >= s;
-    if (liquida && !confirm(`Con este abono ${c.persona || "esta persona"} termina de pagar.\n\n¿Marcar la cuenta como pagada?`)) return;
+    if (liquida && !confirm(`Con este abono ${cName(c)} termina de pagar «${c.concepto || "la cuenta"}».\n\n¿Marcarla como pagada?`)) return;
     (c.abonos = c.abonos || []).push({ id:uid(), fecha:out.fecha, monto:out.monto, nota:out.nota });
     if (liquida) c.liquidado = out.fecha;
     persist(); closeModal(); render({ keepScroll:true });
-    toast(liquida ? `🎉 ${c.persona} terminó de pagar` : `Abono anotado: le falta ${fm(cSaldo(c))}`);
+    toast(liquida ? `🎉 ${cName(c)} terminó de pagar` : `Abono anotado: le falta ${fm(cSaldo(c))}`);
   };
 }
 function liquidar(id) {
   const c = S.cobros.find(x => x.id === id); if (!c) return;
   const s = cSaldo(c);
-  if (!confirm(`¿Confirmas que ${c.persona || "esta persona"} ya te pagó?\n\n${c.concepto ? c.concepto + ": " : ""}le faltaban ${fm(s)}. La cuenta se tacha como pagada.`)) return;
+  if (!confirm(`¿Confirmas que ${cName(c)} ya te pagó?\n\n${c.concepto ? c.concepto + ": " : ""}le faltaban ${fm(s)}. La cuenta se tacha como pagada.`)) return;
   const ab = s > 0 ? { id:uid(), fecha:localISO(), monto:s, nota:"Liquidó" } : null;
   if (ab) (c.abonos = c.abonos || []).push(ab);
   c.liquidado = localISO(); persist(); render({ keepScroll:true });
-  toast(`✓ ${c.persona} pagado`, { label:"Deshacer", fn:() => { if (ab) c.abonos = c.abonos.filter(a => a.id !== ab.id); c.liquidado = ""; persist(); render({ keepScroll:true }); } });
+  toast(`✓ ${cName(c)} pagó`, { label:"Deshacer", fn:() => { if (ab) c.abonos = c.abonos.filter(a => a.id !== ab.id); c.liquidado = ""; persist(); render({ keepScroll:true }); } });
 }
 function reabrir(id) {
-  const c = S.cobros.find(x => x.id === id); if (!c || !confirm(`¿Volver a poner pendiente la cuenta de ${c.persona || "esta persona"}?`)) return;
+  const c = S.cobros.find(x => x.id === id); if (!c || !confirm(`¿Volver a poner pendiente «${c.concepto || "la cuenta"}» de ${cName(c)}?`)) return;
   const last = (c.abonos || [])[c.abonos.length - 1];
   if (last && last.nota === "Liquidó") c.abonos.pop();
   c.liquidado = ""; persist(); render({ keepScroll:true }); toast("Cuenta pendiente otra vez");
@@ -2557,7 +2672,7 @@ function render({ keepScroll = false } = {}) {
   else if (fkey) $(fkey)?.focus();
 }
 function go(v) {
-  if (!VIEWS[v]) return; view = v; history.replaceState(null, "", "#" + v);
+  if (!VIEWS[v]) return; if (v !== view) sub.deudor = ""; view = v; history.replaceState(null, "", "#" + v);
   if ($("#side").classList.contains("on")) { $("#side").classList.remove("on"); if (!$("#modal").classList.contains("on") && !$("#drawer").classList.contains("on")) $("#overlay").classList.remove("on"); }
   $("#fabMenu").classList.remove("on"); render(); window.scrollTo(0, 0);
 }
@@ -2619,7 +2734,7 @@ function readForm(form, fields) {
 function openForm(col, id, preset = {}) {
   const sch = SCHEMAS[col], rec = id ? S[col].find(r => r.id === id) : { ...preset };
   const isNew = !id;
-  if (isNew && col === "txns" && !rec.fecha) rec.fecha = localISO();
+  if (isNew && (col === "txns" || col === "cobros") && !rec.fecha) rec.fecha = localISO();
   openModal(`<form id="frm" novalidate><header><div><h2>${isNew ? "Agregar" : "Editar"} ${sch.title}</h2>${isNew ? "" : `<p>${esc(rec.nombre || rec.concepto || rec.fuente || rec.acreedor || "")}</p>`}</div><button type="button" class="iconbtn" data-act="close" aria-label="Cerrar">${icon("x")}</button></header>
     <div class="mb"><div class="form">${sch.fields.map(f => fieldHTML(f, rec[f.k] ?? "")).join("")}</div></div>
     <footer><div>${isNew ? "" : `<button type="button" class="btn danger" data-del="${col}:${id}">${icon("trash")} Borrar</button>`}</div>
@@ -2631,8 +2746,11 @@ function openForm(col, id, preset = {}) {
     if (col === "cards" && has(out.tasa) && out.tasa > 2.5 && !confirm(`¿Seguro que la tasa es ${fp(out.tasa)}? Normalmente va de 30% a 120%.`)) return;
     if (isNew) S[col].push({ id:uid(), ...(col === "cards" ? { history:[] } : col === "cobros" ? { abonos:[], liquidado:"" } : {}), ...out }); else Object.assign(rec, out);
     if (col === "txns") S.settings.lastCat = out.categoria;
+    if (col === "cobros") { const dd = deudorFor(out.persona); (isNew ? S[col][S[col].length - 1] : rec).deudorId = dd.id; (isNew ? S[col][S[col].length - 1] : rec).persona = dd.nombre; }
+    if (col === "deudores" && !isNew) for (const c of cuentasDe(rec.id)) c.persona = rec.nombre;
+    if (col === "deudores" && isNew) { sub.deudor = S.deudores[S.deudores.length - 1].id; view = "cobros"; }
     persist();
-    const again = ev.submitter?.name === "again";
+    const again = ev.submitter?.name === "again" && col !== "deudores";
     closeModal(); render({ keepScroll:true }); toast(isNew ? "Agregado" : "Guardado");
     if ($("#drawer").classList.contains("on") && col === "cards") cardDrawer($("#drawer").dataset.id);
     if (again) openForm(col, null, col === "txns" ? { fecha:out.fecha, categoria:out.categoria } : { categoria:out.categoria });
@@ -2777,13 +2895,17 @@ function removeRecord(col, id) {
    EVENTOS
    ===================================================================== */
 document.addEventListener("click", e => {
-  const el = e.target.closest("[data-go],[data-add],[data-edit],[data-del],[data-act],[data-csv],[data-month],[data-card],[data-pay],[data-stmt],[data-check],[data-method],[data-months],[data-useplan],[data-src],[data-pick],[data-scrdel],[data-filtro],[data-restore],[data-wizgo],[data-pal],[data-fill],[data-delhist],[data-fab],[data-abono],[data-liquidar],[data-reabrir],[data-delabono]");
+  const el = e.target.closest("[data-go],[data-add],[data-edit],[data-del],[data-act],[data-csv],[data-month],[data-card],[data-pay],[data-stmt],[data-check],[data-method],[data-months],[data-useplan],[data-src],[data-pick],[data-scrdel],[data-filtro],[data-restore],[data-wizgo],[data-pal],[data-fill],[data-delhist],[data-fab],[data-abono],[data-liquidar],[data-reabrir],[data-delabono],[data-deudor],[data-addcobro],[data-deldeudor],[data-cobord]");
   if (!el) { if (e.target.id === "overlay") { closeModal(); closeDrawer(); closePalette(); $("#side").classList.remove("on"); $("#overlay").classList.remove("on"); } if (!e.target.closest(".fab,.fab-menu")) $("#fabMenu").classList.remove("on"); return; }
   const d = el.dataset;
   if (d.del) { e.stopPropagation(); const [col, id] = d.del.split(":"); removeRecord(col, id); return; }
   if (d.delhist) { const [cid, hid] = d.delhist.split(":"); const c = S.cards.find(x => x.id === cid); c.history = c.history.filter(h => h.id !== hid); persist(); cardDrawer(cid); return; }
   if (d.delabono) { const [cid, aid] = d.delabono.split(":"), c = S.cobros.find(x => x.id === cid); if (c && confirm("¿Borrar este abono?")) { c.abonos = c.abonos.filter(a => a.id !== aid); if (c.liquidado && cSaldo(c) > 0) c.liquidado = ""; persist(); render({ keepScroll:true }); } return; }
   if (d.go) go(d.go);
+  else if (d.deudor !== undefined) { sub.deudor = d.deudor; if (view !== "cobros") go("cobros"); else { render(); window.scrollTo(0, 0); } }
+  else if (d.addcobro) openForm("cobros", null, { persona:deudor(d.addcobro)?.nombre || "", fecha:localISO() });
+  else if (d.deldeudor) delDeudor(d.deldeudor);
+  else if (d.cobord) { sub.cobord = d.cobord; render({ keepScroll:true }); }
   else if (d.abono) abonoForm(d.abono);
   else if (d.liquidar) liquidar(d.liquidar);
   else if (d.reabrir) reabrir(d.reabrir);
@@ -2811,7 +2933,7 @@ document.addEventListener("click", e => {
   else if (d.filtro) { sub.filtro = d.filtro; render({ keepScroll:true }); }
   else if (d.pal) runPal(+d.pal);
   else if (d.wizgo) wizard(+d.wizgo);
-  else if (d.fab) { $("#fabMenu").classList.remove("on"); const [k, v] = d.fab.split(":"); if (k === "txn") openForm("txns"); else if (k === "cobro") openForm("cobros"); else if (k === "pay") payForm(v); else if (k === "pal") openPalette(v); }
+  else if (d.fab) { $("#fabMenu").classList.remove("on"); const [k, v] = d.fab.split(":"); if (k === "txn") openForm("txns"); else if (k === "cobro") openForm("cobros", null, { fecha:localISO() }); else if (k === "pay") payForm(v); else if (k === "pal") openPalette(v); }
   else if (d.restore) {
     const b = backups()[+d.restore];
     if (b && confirm(`¿Restaurar el respaldo del ${new Date(b.t).toLocaleString("es-MX")}? Los datos actuales se reemplazan.`)) { S = K.migrate(JSON.parse(b.data)); K.setIva(S.settings.iva); persist(); render(); toast("Respaldo restaurado"); }
